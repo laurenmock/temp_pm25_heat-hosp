@@ -1,1 +1,1 @@
-# temp_pm25_heat-hosp
+# Synergistic effects of heat and PM$_{2.5}$ on heat-related hospitalizations

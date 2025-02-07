@@ -1,9 +1,9 @@
 ###############################################################
-# Heat-related outcomes
+# Temperature, PM2.5, and heat-related hospitalization
 # Authors: Kevin Josey and Lauren Mock
 # Aim: Merge data and prepare for analysis
 # Inputs: 
-#   Exposure data (temp, PM2.5, medication)
+#   Exposure data (temperature and PM2.5)
 #   Outcome data (heat-related hospitalization)
 # Output:
 #   Case-crossover data for analysis
@@ -17,7 +17,6 @@ require(dplyr)
 library(fst)
 library(data.table)
 library(survival)
-#library(dlnm)
 library(mgcv)
 library(ggplot2)
 
@@ -27,21 +26,21 @@ dataset <- "tmax_temp"
 #dataset <- "hi_temp"
 #dataset <- "hi_pcnt"
 
+# paths for reading/saving data
+path_data_raw <- "data/raw/"
+path_data_int <- "data/intermediate/"
+
 #---------- Collect PM2.5 into a single DF ----------#
 # Note: don't need to re-run this section (already saved in raw data folder)
-
-# setwd(paste0(proj_path, "data/raw/daily_pm25_sep_files/pm25_all_CSVs"))
 # 
-# pm_list <- list.files(pattern = ".csv")
+# pm_list <- list.files(path = "data/raw/daily_pm25_sep_files/pm25_all_CSVs", pattern = ".csv")
 # pm_df <- data.frame()
 # 
 # for (i in 1:length(pm_list)) {
-#   
 #   pm_tmp <- read_csv(pm_list[[i]])
 #   pm_tmp$date <- ymd(substr(pm_list[[i]], 1, 8))
 #   pm_df <- rbind(pm_df, pm_tmp)
 #   rm(pm_tmp)
-#   
 # }
 # 
 # colnames(pm_df) <- tolower(colnames(pm_df))
@@ -55,8 +54,7 @@ dataset <- "tmax_temp"
 ##### Temp data
 
 # Read data
-temp_df <- read_sas(paste0("data/raw/dlnm_heatrel_", dataset, ".sas7bdat"))
-
+temp_df <- read_sas(paste0(path_data_raw, "dlnm_heatrel_", dataset, ".sas7bdat"))
 
 # Change column names
 names(temp_df)[3:ncol(temp_df)] <- paste0("temp_", names(temp_df)[3:ncol(temp_df)])
@@ -69,7 +67,7 @@ setDT(temp_df)
 ##### PM2.5 data
 
 # Read data
-pm_df <- read_csv("data/raw/daily_pm25_one_file.csv")
+pm_df <- read_csv(paste0(path_data_raw, "daily_pm25_one_file.csv"))
 
 # Change column names
 colnames(pm_df) <- tolower(colnames(pm_df))
@@ -87,22 +85,22 @@ pm_df[, paste0("pm25_lag", 1:28) := shift(.SD, 1:28, type = "lag"),
       by = "zipcode", .SDcols = "pm25_lag0"]
 
 
-##### Medication data
-
-# Binary indicators for medication use each day
-# For each individual, we have medication exposures going back 28 days
-
-# Read data
-med_df <- read_sas("data/raw/dlnm_med_heatrel.sas7bdat")
-
-# Convert to data.table
-setDT(med_df)
+# ##### Medication data
+# 
+# # Binary indicators for medication use each day
+# # For each individual, we have medication exposures going back 28 days
+# 
+# # Read data
+# med_df <- read_sas("data/raw/dlnm_med_heatrel.sas7bdat")
+# 
+# # Convert to data.table
+# setDT(med_df)
 
 
 ##### heat-related event (outcome) data
 
 # Read data
-hosp_df <- read_sas("data/raw/cc_heatrel_bi_28d.sas7bdat")
+hosp_df <- read_sas(paste0(path_data_raw, "cc_heatrel_bi_28d.sas7bdat"))
 
 # Change column names
 colnames(hosp_df) <- tolower(colnames(hosp_df))
@@ -116,7 +114,7 @@ hosp_df$dow <- factor(weekdays(hosp_df$dates),
 
 #-- restrict to first hospitalization per beneficiary
 
-# make sure data is ordered properly (by individual and then by da)
+# make sure data is ordered properly (by individual and then by date)
 hosp_df <- hosp_df[order(hosp_df$bene_id, hosp_df$dates), ]
 
 # get first keyid for each person
@@ -172,7 +170,7 @@ rm(hosp_df, cases, controls); gc()
 setDT(cco)
 
 
-#---------- Merge with exposures (temp, PM2.5, and steroid use) ----------#
+#---------- Merge with exposures (temperature and PM2.5) ----------#
 
 # Merge with temperature
 cco <- temp_df[cco, on = .(keyid, dates)]
@@ -182,9 +180,9 @@ rm(temp_df); gc()
 cco <- pm_df[cco, on = .(zipcode, dates)]
 rm(pm_df); gc()
 
-# Merge with medication use
-cco <- med_df[cco, on = .(keyid)]
-rm(med_df); gc()
+# # Merge with medication use
+# cco <- med_df[cco, on = .(keyid)]
+# rm(med_df); gc()
 
 
 #---------- Missing data ----------#
@@ -211,7 +209,7 @@ cco <- cco[complete.cases(cco[, ..cols_to_check]),]
 # Column for age (on day of case)
 cco[, age := time_length(difftime(casedate, dob), "years") |> trunc()]
 
-# new column for 3-day PM
+# new column for 3-day PM (mean across lag 0 back to lag 2)
 cco[, pm25_3day := rowMeans(.SD), .SDcols = paste0("pm25_lag", 0:2)]
 
 # column for number of control days per person
@@ -221,7 +219,7 @@ cco[, num_control := .N - 1, by = bene_id]
 #---------- Save full dataset ----------#
 
 # Save data
-save(cco, file = paste0("data/intermediate/cco_", dataset, ".RData"))
+save(cco, file = paste0(path_data_int, "cco_", dataset, ".RData"))
 
 
 #---------- Trim high PM2.5 values and save new dataset ----------#
@@ -242,5 +240,5 @@ cco[, num_control_trim := .N - 1, by = bene_id]
 cco <- cco[num_control_trim != 0,]
 
 # Save trimmed data
-save(cco, file = paste0("data/intermediate/cco_trimmed_", dataset, ".RData"))
+save(cco, file = paste0(path_data_int, "cco_trimmed_", dataset, ".RData"))
 

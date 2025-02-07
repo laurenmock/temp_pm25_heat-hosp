@@ -1,9 +1,11 @@
 ###############################################################
-# Heat-related outcomes
+# Temperature, PM2.5, and heat-related hospitalization
 # Author: Lauren Mock
 # Aim: Understand data
-# Input: Case-crossover data
-# Output: Summary statistics/EDA
+# Input: 
+#   Case-crossover data
+# Output: 
+#   Summary statistics/EDA
 ###############################################################
 
 library(data.table)
@@ -17,6 +19,8 @@ library(xtable)
 library(haven)
 library(RColorBrewer)
 library(cowplot)
+library(viridis)
+
 
 #---------- user inputs ----------#
 
@@ -29,11 +33,8 @@ dataset <- "tmax_temp"
 
 #---------- load case-crossover data ----------#
 
-# Load case-crossover data
+# Load trimmed case-crossover data
 load(paste0("data/intermediate/cco_trimmed_", dataset, ".RData"))
-
-# open PDF to save plots
-#pdf("results/EDA.pdf")
 
 
 #---------- load zip to county data ----------#
@@ -167,29 +168,7 @@ cco[cases == 0] |>
 #   theme_minimal()
 
 
-
-#---------- look at inhosp variable ----------#
-
-# look at inhosp variable
-100 * nrow(cco[cases == 0 & inhosp == 1])/nrow(cco[cases == 0]) # 8%
-# leaving these for now, but we could remove them
-
-# plot.new()
-# text(x = 0.5, y = 0.95, paste0(round(pct_inhosp, 1), 
-#                                "% of control days were during hospital stays"))
-
-
 #---------- heat and PM2.5 exposure ----------#
-
-# cco |>
-#   ggplot() +
-#   geom_density(aes(temp_lag0, col = as.factor(cases))) +
-#   theme_minimal()
-# 
-# cco |>
-#   ggplot() +
-#   geom_density(aes(pm25_lag0, col = as.factor(cases))) +
-#   theme_minimal()
 
 # temperature (case days)
 temp_dist <- cco |>
@@ -233,12 +212,11 @@ pm25_dist <- cco |>
   )
 
 # align plots (so the plotting space is the same)
-temp_pm25_plots <- align_plots(temp_dist, pm25_dist, align = "hv")
+temp_pm25_plots <- cowplot::align_plots(temp_dist, pm25_dist, align = "hv")
 
 # plot
-pdf("results/figures/temp_pm25_dist.pdf", width = 7, height = 3)
 plot_grid(temp_pm25_plots[[1]], temp_pm25_plots[[2]])
-dev.off()
+ggsave("results/figures/temp_pm25_dist.pdf", width = 7, height = 3)
 
 # get range of temp and pm values on case date
 cases <- cco %>%
@@ -288,26 +266,14 @@ cco %>%
 # 
 
 
-##################################################
-##############    MAPS  ##########################
-##################################################
 
-# # load zip to state file
-# zip_to_state <- read_sas(paste0("data/raw/zipcode_to_state.sas7bdat"))
-# 
-# # merge with patient data
-# cco <- left_join(cco, zip_to_state, by = c("zipcode"))
+#---------------------------------
+# look at exposures on each control day (2 weeks before, 1 week before, etc.)
 
-#--- get all the plotting data I want while cco is a data table (faster)
 
-# # get data to plot--mean case day temp in each state
-# plot_df <- cco %>%
-#   filter(cases == 1) %>%
-#   group_by(State) %>%
-#   summarise(mean_temp_lag0 = mean(temp_lag0),
-#             mean_pm25_3day = mean(pm25_3day),
-#             n = n())
+#---------- maps (exposures and outcome) ----------#
 
+# set up data for plotting (while cco is a data table--faster)
 plot_df <- cco %>%
   filter(cases == 1) %>%
   group_by(county) %>%
@@ -315,8 +281,18 @@ plot_df <- cco %>%
             mean_pm25_3day = mean(pm25_3day),
             n = n())
 
+# load at risk people in Medicare
+at_risk <- read_sas(paste0("data/raw/atrisk_cty.sas7bdat"))
 
-#--- now merge and plot
+# join with plot_df
+plot_df <- left_join(plot_df, at_risk, by = "county")
+
+# new column of interest: hosp rate
+plot_df <- plot_df %>%
+  mutate(hosp_rate = n/at_risk * 1000)
+
+
+#---- get county/state geometry
 
 # load state shapefile
 state_sf <- read_sf("data/raw/shapefiles_state/cb_2018_us_state_20m.shp") %>%
@@ -327,65 +303,65 @@ county_sf <- read_sf("data/raw/shapefiles_county/cb_2018_us_county_20m.shp") %>%
   filter(!(STATEFP %in% c("02", "15", "66", "72", "60", "69", "78"))) %>%
   mutate(county = as.numeric(GEOID))
 
-# join shapefile with plotting data
-#plot_df <- right_join(county_sf, plot_df, by = c("STUSPS" = "State"))
+# join county shapefile with plotting data
 plot_df <- full_join(county_sf, plot_df, by = c("county"), )
 
-# load at risk people in Medicare
-at_risk <- read_sas(paste0("data/raw/atrisk_cty.sas7bdat"))
 
-# join with plot_df
-plot_df <- left_join(plot_df, at_risk, by = "county")
-
-
-
-
-#color_pal_temp <- c("#ffffd2", "#FFFFB2", "#fecc5c", "#fd8d3c", "#f03b20", "#bd0026")
-color_pal_temp <- c("#ffffd2", "#FFFFB2", "#fecc5c", "#fd8d3c", "#cc5500", "#7b3804")
-
-# temp map
+##### temp map #####
 temp_map <- plot_df %>%
-  mutate(mean_temp_lag0 = ifelse(n > 10, mean_temp_lag0, NA)) %>% # filter to > 10 cases
+  mutate(mean_temp_lag0 = ifelse(n > 10, # & at_risk > 1000, 
+                                 mean_temp_lag0, NA)) %>% # filter to > 10 cases
+  mutate(temp_cat = cut(mean_temp_lag0, 
+                        right = FALSE,
+                        breaks = c(64, 80, 85, 90, 105), # 64.2, 104.8
+                        labels = c("64\u201380", "80\u201385",
+                                   "85\u201390", "90\u2013105")
+                        )) %>%
   ggplot() +
-  geom_sf(aes(fill = mean_temp_lag0), col = NA) +
-  geom_sf(data = state_sf, fill = NA, col = "gray90") +
+  geom_sf(aes(fill = temp_cat), col = NA) +
+  geom_sf(data = state_sf, fill = NA, col = "black") +
   coord_sf(crs = st_crs(5070)) +
-  labs(fill = "Mean daily max. temperature (\u00B0F)") +
-  #scale_fill_gradient(low = "#fff7ed", high = "#ff6600") +
-  # scale_fill_gradientn(name = waiver(),
-  #                      low = "#ffffbf", 
-  #                      high = "red3") +
-  #scale_fill_gradientn(colors = brewer.pal(n = 8, name = "Oranges")) +
-  #scale_fill_viridis(option = "F", na.value = "gray70", direction = -1) +
-  scale_fill_gradientn(colors = color_pal_temp, na.value = "gray70") +
+  labs(fill = "Daily maximum temperature (\u00B0F)") +
+  scale_fill_manual(#values = c("#fee391", "#fe9929", "#cc5500", "#7b3804"),
+                    #values = viridis(5, option = "F", direction = -1)[2:5], # use 4 darkest of 5 colors
+                    values = viridis(4, option = "D"),
+                    na.translate = FALSE) +
   theme_void() +
   theme(legend.position = "bottom",
-        legend.ticks = element_blank()) +
-  guides(fill = guide_colorbar(title.position = "top",
-                               barwidth = 10,
-                               barheight = 0.5))
+        legend.direction = "horizontal",
+        legend.title.position = "top",
+        legend.ticks = element_blank())
 
-color_pal_pm25 <- c("#ede7f6", "#b19cd9", "#7e5bca", "#3f007d", "#130a2e")
 
-# pm25 map
+##### pm25 map #####
 pm25_map <- plot_df %>%
-  mutate(mean_pm25_3day = ifelse(n > 10, mean_pm25_3day, NA)) %>% # filter to > 10 cases
+  mutate(mean_pm25_3day = ifelse(n > 10, 
+                                 #& at_risk > 1000, 
+                                 mean_pm25_3day, NA)) %>% # filter to > 10 cases
+  mutate(pm25_cat = cut(mean_pm25_3day, 
+                        right = FALSE,
+                        breaks = c(2, 7, 9, 11, 15), # 2.9, 14.3
+                        labels = c("3\u20137", "7\u20139",
+                                   "9\u201311", "11\u201314")
+  )) %>%
   ggplot() +
-  geom_sf(aes(fill = mean_pm25_3day), col = NA) +
-  geom_sf(data = state_sf, fill = NA, col = "gray90") +
+  geom_sf(aes(fill = pm25_cat), col = NA) +
+  geom_sf(data = state_sf, fill = NA, col = "black") +
   coord_sf(crs = st_crs(5070)) +
-  labs(fill = expression("Mean three-day " * PM[2.5] * " (\u03BCg/" * m^3 * ")")) +
-  #scale_fill_gradient(low = "#e9e6f3", high = "#692d94", na.value = "gray90") +
-  #scale_fill_viridis(option = "D", na.value = "gray70") +
-  scale_fill_gradientn(colors = color_pal_pm25, na.value = "gray70") +
+  labs(fill = expression("Three-day " * PM[2.5] * " (\u03BCg/" * m^3 * ")")) +
+  scale_fill_manual(#values = c("#dfd4ef", "#b19cd9", "#7d52be", "#3f007d"),
+                    values = viridis(4, option = "D"),
+                    na.translate = FALSE#,
+                    #na.value = "gray60"
+  ) +
   theme_void() +
   theme(legend.position = "bottom",
-        legend.ticks = element_blank()) +
-  guides(fill = guide_colorbar(title.position = "top",
-                               barwidth = 10,
-                               barheight = 0.5))
+        legend.direction = "horizontal",
+        legend.title.position = "top",
+        legend.ticks = element_blank())
 
-# rate of hosp map 
+
+###### rate of hospitalization map #####
 
 # # further aggregate plot data by state
 # plot_state_df <- plot_df %>%
@@ -399,140 +375,36 @@ pm25_map <- plot_df %>%
 # # merge with plot data
 # plot_state_df <- left_join(plot_state_df, at_risk, by = c("STATEFP" = "State"))
 
-# new column of interest
-plot_df <- plot_df %>%
-  mutate(hosp_rate = n/at_risk * 1000)
-
-color_pal_atrisk <- colorRampPalette(c(#"#f9eaed", 
-                                       "#f2dede", "#ecc0c9", "#e079a6", "#a2004c", "#750d3e", "#531f20"))
-
-atrisk_map <- plot_df %>%
-  mutate(hosp_rate = ifelse(n > 10, hosp_rate, NA)) %>% # filter to > 10 cases
-  mutate(hosp_rate = ifelse(hosp_rate > 40, 40, hosp_rate)) %>% # cap max val
+hosp_map <- plot_df %>%
+  mutate(hosp_rate = ifelse(n > 10,
+                            #& at_risk > 1000, 
+                            hosp_rate, NA)) %>% # filter to > 10 cases
+  mutate(hosp_cat = cut(hosp_rate,
+                        right = FALSE,
+                        breaks = c(1, 4, 7, 10, 59), # 1.1, 58.2
+                        labels = c("1\u20134", "4\u20137",
+                        "7\u201310", "10\u201358")
+  )) %>%
   ggplot() +
-  geom_sf(aes(fill = hosp_rate), col = NA) +
-  geom_sf(data = state_sf, fill = NA, col = "gray90") +
+  geom_sf(aes(fill = hosp_cat), col = NA) +
+  geom_sf(data = state_sf, fill = NA, col = "black") +
   coord_sf(crs = st_crs(5070)) +
-  labs(fill = "Heat-related hosp. / 1,000 people at risk") +
-  scale_fill_gradientn(colors = color_pal_atrisk(10), na.value = "gray70",
-                       breaks = c(10, 20, 30, 40),
-                       labels = c("10", "20", "30", "40+")) +
+  labs(fill = "Heat-related hospitalizations \nper 1,000 people at risk") +
+  scale_fill_manual(values = viridis(4, option = "D"),
+                    na.translate = FALSE) +
   theme_void() +
   theme(legend.position = "bottom",
-        legend.ticks = element_blank()) +
-  guides(fill = guide_colorbar(title.position = "top",
-                               barwidth = 10,
-                               barheight = 0.5))
-
-pdf("results/figures/temp_pm25_hosp_maps.pdf", height = 3, width = 9)
-ggarrange(temp_map, pm25_map, atrisk_map, nrow = 1)
-dev.off()
+        legend.direction = "horizontal",
+        legend.title.position = "top",
+        legend.ticks = element_blank())
 
 
-# need to figure out which counties to remove --> don't worry about it
-# # get total # at risk
-# at_risk <- at_risk %>%
-#   filter(!State %in% c("AA", "AR", "AK", "AS", "AE", "AP", "GU", "HI", "MP", "PR", "DC"))
-# total_at_risk <- sum(at_risk$at_risk)
+# align plots (so the plotting space is the same)
+all_maps <- cowplot::align_plots(temp_map, pm25_map, hosp_map, align = "hv")
 
-
-# #--- number of cases by zip code (or maybe by state)
-# 
-# 
-# #--- some kind of maps of PM2.5 and temperature 
-# 
-# # I don't even have this for the whole study period (only case/controls and lags)
-# 
-# 
-# # load state and zcta shapefiles
-# state_sf <- read_sf("data/raw/shapefiles_state/cb_2018_us_state_20m.shp") %>%
-#   filter(!(STATEFP %in% c("02", "15", "66", "72", "60", "69", "78")))
-# zcta_sf <- read_sf("data/raw/shapefiles_zcta/cb_2018_us_zcta510_500k.shp")
-# 
-# 
-# # # FILTER STATES MORE FOR NOW
-# # state_sf <- state_sf %>%
-# #   filter(STATEFP %in% c("05", "29"))
-# 
-# 
-# # # try mapping mean temp_lag0 on case days (SLOW)
-# # map_temp_df <- cco_sf %>%
-# #   group_by(ZCTA5CE10) %>%
-# #   summarise(mean_temp_lag0 = first(temp_lag0))
-# 
-# 
-# # and maybe I should do all of this for counties instead of states? but borders get messy
-# # could also just do zip codes, but that doesn't include a lot of areas
-# 
-# # get zip/state intersections (slow--use two states only for now)
-# zip_state_intersect <- st_intersection(zcta_sf, state_sf)
-# # warning is fine
-# 
-# # new column to get intersection area
-# zip_state_intersect <- zip_state_intersect %>%
-#   mutate(intersection_area = st_area(geometry))
-# 
-# # # check 65733
-# # zip_state_intersect %>%
-# #   filter(ZCTA5CE10 == "65733") %>%
-# #   pull(intersection_area)
-# 
-# # for each county, filter to state with largest area
-# zip_to_state <- zip_state_intersect %>%
-#   group_by(ZCTA5CE10) %>%
-#   filter(intersection_area == max(intersection_area))
-# 
-# # # check 65733 again
-# # zip_to_state %>%
-# #   filter(ZCTA5CE10 == "65733") %>%
-# #   pull(intersection_area)
-# 
-# # looks good!!
-# 
-# # # join zcta and state
-# # zip_to_state <- st_join(zcta_sf, state_sf, join = st_intersects)
-# 
-# # join zcta data with patient data
-# cco_sf <- right_join(zip_to_state, cco, by = c("ZCTA5CE10" = "zipcode"))
-# 
-# # get data to plot
-# # mean case day temp in each state
-# map_temp_df <- cco_sf %>%
-#   filter(cases == 1) %>%
-#   #filter(STATEFP %in% c("05", "29")) %>%
-#   group_by(STATEFP) %>%
-#   summarise(mean_temp_lag0 = mean(temp_lag0))
-# 
-# # temp map
-# map_temp_df %>%
-#   #filter(STATEFP %in% c("05", "29")) %>%
-#   #filter(str_starts(ZCTA5CE10, "0")) %>%
-#   #mutate(hosp_here = ifelse()) %>%
-#   ggplot() +
-#   #geom_sf(aes(fill = temp_lag0), col = NA) +
-#   geom_sf(aes(fill = mean_temp_lag0), col = NA) +
-#   #geom_sf(data = state_sf, fill = NA) +
-#   coord_sf(crs = st_crs(5070)) +
-#   theme_void()
-# 
-# 
-# # number of people with hosp
-# cco_sf %>%
-#   filter(cases == 1) %>%
-#   filter(STATEFP %in% c("05", "29")) %>%
-#   #filter(str_starts(ZCTA5CE10, "0")) %>%
-#   #mutate(hosp_here = ifelse()) %>%
-#   ggplot() +
-#   #geom_sf(aes(fill = temp_lag0), col = NA) +
-#   geom_sf(fill = "blue", col = NA) +
-#   #geom_sf(data = state_sf, fill = NA) +
-#   coord_sf(crs = st_crs(5070)) +
-#   theme_void()
-# 
-# # now try to figure out what is going on
-# # two different geometries? which will it plot?
-# # and probably want to do county level, not state
-
+# plot
+plot_grid(all_maps[[1]], all_maps[[2]], all_maps[[3]], nrow = 1)
+ggsave("results/figures/temp_pm25_hosp_maps.pdf", height = 3, width = 10)
 
 
 ##############################################################
@@ -544,7 +416,6 @@ load(paste0("data/intermediate/cco_", dataset, ".RData"))
 pm25_3day_q95 <- quantile(cco$pm25_3day, 0.95) # 18.4 ug/m3
 
 # get dist of PM2.5 before trimming
-pdf("results/figures/pm25_dist_pretrim.pdf", width = 8, height = 3)
 cco |>
   filter(cases == 1) |>
   ggplot() +
@@ -557,7 +428,7 @@ cco |>
   labs(x = expression("Three-day " * PM[2.5] * " (\u03BCg/" * m^3 * ")"),
        y = "Frequency") +
   theme_minimal()
-dev.off()
+ggsave("results/figures/pm25_dist_pretrim.pdf", width = 8, height = 3)
 
 # get range of PM2.5 values (before trimming) on case dates
 cases <- cco %>%

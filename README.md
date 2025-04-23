@@ -1,1 +1,1 @@
-# Synergistic effects of heat and PM2.5 on heat-related hospitalizations
+# Synergistic effects of temperature and PM₂.₅ on heat-related hospitalizations

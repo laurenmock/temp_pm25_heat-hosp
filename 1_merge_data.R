@@ -20,33 +20,27 @@ library(survival)
 library(mgcv)
 library(ggplot2)
 
-# choose temperature metric
-dataset <- "tmax_temp"
-#dataset <- "tmax_pcnt"
-#dataset <- "hi_temp"
-#dataset <- "hi_pcnt"
-
 # paths for reading/saving data
 path_data_raw <- "data/raw/"
 path_data_int <- "data/intermediate/"
 
 #---------- Collect PM2.5 into a single DF ----------#
 # Note: don't need to re-run this section (already saved in raw data folder)
-# 
-# pm_list <- list.files(path = "data/raw/daily_pm25_sep_files/pm25_all_CSVs", pattern = ".csv")
-# pm_df <- data.frame()
-# 
-# for (i in 1:length(pm_list)) {
-#   pm_tmp <- read_csv(pm_list[[i]])
-#   pm_tmp$date <- ymd(substr(pm_list[[i]], 1, 8))
-#   pm_df <- rbind(pm_df, pm_tmp)
-#   rm(pm_tmp)
-# }
-# 
-# colnames(pm_df) <- tolower(colnames(pm_df))
-#
-# # Write csv for all PM2.5 data 
-# write_csv(pm_df, "data/raw/daily_pm25_one_file.csv")
+
+pm_list <- list.files(path = "data/raw/daily_pm25_sep_files/pm25_all_CSVs", pattern = ".csv")
+pm_df <- data.frame()
+
+for (i in 1:length(pm_list)) {
+  pm_tmp <- read_csv(pm_list[[i]])
+  pm_tmp$date <- ymd(substr(pm_list[[i]], 1, 8))
+  pm_df <- rbind(pm_df, pm_tmp)
+  rm(pm_tmp)
+}
+
+colnames(pm_df) <- tolower(colnames(pm_df))
+
+# Write csv for all PM2.5 data
+write_csv(pm_df, "data/raw/daily_pm25_one_file.csv")
 
 
 #---------- Load all data ----------#
@@ -54,7 +48,7 @@ path_data_int <- "data/intermediate/"
 ##### Temp data
 
 # Read data
-temp_df <- read_sas(paste0(path_data_raw, "dlnm_heatrel_", dataset, ".sas7bdat"))
+temp_df <- read_sas(paste0(path_data_raw, "dlnm_heatrel_tmax_temp.sas7bdat"))
 
 # Change column names
 names(temp_df)[3:ncol(temp_df)] <- paste0("temp_", names(temp_df)[3:ncol(temp_df)])
@@ -85,18 +79,6 @@ pm_df[, paste0("pm25_lag", 1:28) := shift(.SD, 1:28, type = "lag"),
       by = "zipcode", .SDcols = "pm25_lag0"]
 
 
-# ##### Medication data
-# 
-# # Binary indicators for medication use each day
-# # For each individual, we have medication exposures going back 28 days
-# 
-# # Read data
-# med_df <- read_sas("data/raw/dlnm_med_heatrel.sas7bdat")
-# 
-# # Convert to data.table
-# setDT(med_df)
-
-
 ##### heat-related event (outcome) data
 
 # Read data
@@ -123,7 +105,7 @@ first_hosp_keyid <- hosp_df %>%
   summarise(first_keyid = first(keyid)) %>%
   pull(first_keyid)
 
-# now filter to rows we care about
+# now filter to first hospitalization
 hosp_df <- hosp_df %>%
   filter(keyid %in% first_hosp_keyid)
 
@@ -180,28 +162,17 @@ rm(temp_df); gc()
 cco <- pm_df[cco, on = .(zipcode, dates)]
 rm(pm_df); gc()
 
-# # Merge with medication use
-# cco <- med_df[cco, on = .(keyid)]
-# rm(med_df); gc()
+# remove data after 2016 (PM2.5 data only goes through 2016)
+cco <- cco[caseyr %in% 2008:2016]
 
 
 #---------- Missing data ----------#
 
-# What % of people are missing PM2.5 on lag0?
-nrow(cco[cases == 1 & is.na(pm25_lag0)]) / nrow(cco[cases == 1]) 
-# 20% missing -- no PM2.5 data for 2017, 2018, 2019
+# checking missing values in each column
+cco[, lapply(.SD, function(x) mean(is.na(x)) * 100)]
 
-# What % of rows are missing any data? (exclude columns expected to be missing)
-cols_to_check <- setdiff(names(cco), c("inhosp", "deathdate",
-                                       "med_ANTICHOL_dt", "daysupp_ANTICHOL", "med_STIM_dt",
-                                       "daysupp_STIM", "med_LOOPD_dt", "daysupp_LOOPD", "pdx", "sdx",
-                                       "user_Antichol", "user_Stim", "user_LoopD"))
-nrow(cco[cases == 1 & !complete.cases(cco[, ..cols_to_check]),]) / nrow(cco[cases == 1])
-
-# Same number--only missing data is PM2.5
-
-# Remove these rows with missing data
-cco <- cco[complete.cases(cco[, ..cols_to_check]),]
+# remove rows missing PM2.5
+cco <- cco[complete.cases(cco[, pm25_lag0]),]
 
 
 #---------- New columns ----------#
@@ -212,33 +183,64 @@ cco[, age := time_length(difftime(casedate, dob), "years") |> trunc()]
 # new column for 3-day PM (mean across lag 0 back to lag 2)
 cco[, pm25_3day := rowMeans(.SD), .SDcols = paste0("pm25_lag", 0:2)]
 
+# new column for 3-day temperature (mean across lag 0 back to lag 2)
+cco[, temp_3day := rowMeans(.SD), .SDcols = paste0("temp_lag", 0:2)]
+
 # column for number of control days per person
 cco[, num_control := .N - 1, by = bene_id]
 
 
-#---------- Save full dataset ----------#
+#---------- Identify extreme PM2.5 values ----------#
 
-# Save data
-save(cco, file = paste0(path_data_int, "cco_", dataset, ".RData"))
-
-
-#---------- Trim high PM2.5 values and save new dataset ----------#
-
-# get 95th percentile of 3-day PM2.5
+# get 95th and 99th percentiles of 3-day PM2.5
 pm25_3day_q95 <- quantile(cco$pm25_3day, 0.95) # 18.4 ug/m3
+pm25_3day_q99 <- quantile(cco$pm25_3day, 0.99) # 23.7 ug/m3
 
-# remove any rows with 3-day PM2.5 > 95th percentile
-cco <- cco[pm25_3day <= pm25_3day_q95,]
+# get indicators for days with PM2.5 levels above these values
+cco[, pm25_3day_above95 := fifelse(pm25_3day > pm25_3day_q95, 1, 0)]
+cco[, pm25_3day_above99 := fifelse(pm25_3day > pm25_3day_q99, 1, 0)]
+
+
+#---------- Save full and trimmed datasets ----------#
+
+
+#--- Full dataset
+
+save(cco, file = paste0(path_data_int, "cco_full_tmax_temp.RData"))
+
+
+
+#--- Trimmed at 95th percentile
+
+cco_trim95 <- cco[pm25_3day_above95 == 0,]
 
 # remove anyone in the trimmed dataset without a case date
-cco <- cco[bene_id %in% cco[cases == 1, unique(bene_id)]]
+cco_trim95 <- cco_trim95[bene_id %in% cco_trim95[cases == 1, unique(bene_id)]]
 
 # new column for number of control days per person after trimming
-cco[, num_control_trim := .N - 1, by = bene_id]
+cco_trim95[, num_control_trim := .N - 1, by = bene_id]
 
 # remove anyone with 0 control dates
-cco <- cco[num_control_trim != 0,]
+cco_trim95 <- cco_trim95[num_control_trim != 0,]
 
 # Save trimmed data
-save(cco, file = paste0(path_data_int, "cco_trimmed_", dataset, ".RData"))
+save(cco_trim95, file = paste0(path_data_int, "cco_trim95_tmax_temp.RData"))
+
+
+
+#--- Trimmed at 99th percentile
+
+cco_trim99 <- cco[pm25_3day_above99 == 0,]
+
+# remove anyone in the trimmed dataset without a case date
+cco_trim99 <- cco_trim99[bene_id %in% cco_trim99[cases == 1, unique(bene_id)]]
+
+# new column for number of control days per person after trimming
+cco_trim99[, num_control_trim := .N - 1, by = bene_id]
+
+# remove anyone with 0 control dates
+cco_trim99 <- cco_trim99[num_control_trim != 0,]
+
+# Save trimmed data
+save(cco_trim99, file = paste0(path_data_int, "cco_trim99_tmax_temp.RData"))
 

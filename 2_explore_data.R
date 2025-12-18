@@ -20,21 +20,20 @@ library(haven)
 library(RColorBrewer)
 library(cowplot)
 library(viridis)
-
-
-#---------- user inputs ----------#
-
-# choose temperature metric
-dataset <- "tmax_temp"
-#dataset <- "tmax_pcnt"
-#dataset <- "hi_temp"
-#dataset <- "hi_pcnt"
+library(ggpointdensity)
 
 
 #---------- load case-crossover data ----------#
 
 # Load trimmed case-crossover data
-load(paste0("data/intermediate/cco_trimmed_", dataset, ".RData"))
+load(paste0("data/intermediate/cco_trim95_tmax_temp.RData"))
+cco <- cco_trim95
+rm(cco_trim95); gc()
+
+
+#---------- convert temperature to Celsius ----------#
+
+cco[, temp_lag0 := (temp_lag0 - 32) * (5/9)]
 
 
 #---------- load zip to county data ----------#
@@ -47,7 +46,7 @@ zip2county <- zip2county %>%
   rename("zipcode" = "zip") %>%
   select(zipcode, county)
 
-# make cco dataset zipcode integer (need to check this is working properly)
+# make cco dataset zipcode integer
 cco <- cco %>%
   mutate(zipcode = as.integer(zipcode))
 
@@ -123,52 +122,7 @@ cco[cases == 0] |>
   theme_minimal()
 
 
-#--- Med use
-# what % are not taking any meds?
-# sum(is.na(cco[cases == 1, user_Antichol])) / nrow(cco[cases == 1])
-
-# # what % are taking each of the three meds?
-# cco |>
-#   # filter to people taking at least one med
-#   filter(cases == 1) |>
-#   select(user_Antichol, user_Stim, user_LoopD) |>
-#   colMeans(na.rm = TRUE)
-#   #gather(key = "key", value = "value") |>
-#   # group_by(key) |>
-#   # summarise(frequency = n_distinct(value))
-
-#test[,table(value), by = key]
-
-
-# cco[cases == 1] |>
-#   group_by(steroid_use) |>
-#   summarise(count = n()) |>
-#   mutate(percent = 100 * count/sum(count)) |>
-#   ggplot() +
-#   geom_bar(aes(x = steroid_use, y = percent), 
-#            col = "white", fill = "#a0c293",
-#            stat = "identity") +
-#   labs(x = "Steroid use on case and control days", y = "% of individuals") +
-#   scale_y_continuous(labels = label_comma()) +
-#   theme_minimal()
-
-# # steroid use on control days before, steroid use on case day, steroid use on control days after
-# cco |>
-#   group_by(control_time, steroid_lag0) |>
-#   summarise(count = n()) |>
-#   mutate(percent = 100 * count/sum(count)) |>
-#   ggplot() +
-#   geom_bar(aes(x = control_time, y = percent, fill = factor(steroid_lag0)), 
-#            col = "white", stat = "identity") +
-#   labs(x = "", y = "% of days", fill = "") +
-#   scale_y_continuous(labels = label_comma()) +
-#   scale_fill_manual(values = c(`0` = "skyblue", 
-#                                    `1` = "darkorange"),
-#                         labels = c("Not taking steroids", "Taking steroids")) +
-#   theme_minimal()
-
-
-#---------- heat and PM2.5 exposure ----------#
+#---------- heat and PM2.5 exposures ----------#
 
 # temperature (case days)
 temp_dist <- cco |>
@@ -181,10 +135,10 @@ temp_dist <- cco |>
   scale_x_continuous(expand = c(0, 0)) +
   scale_y_continuous(labels = label_comma(), 
                      expand = c(0, 0),
-                     limits = c(0, 10500)) +
+                     limits = c(0, 20000)) +
   geom_vline(xintercept = median(cco$temp_lag0), lty = 2, color = "gray30") +
   geom_vline(xintercept = quantile(cco$temp_lag0, 0.95), lty = 2, color = "gray30") +
-  labs(x = "Daily maximum temperature (\u00B0F)", 
+  labs(x = "Daily maximum temperature (\u00B0C)", 
        y = "Frequency") +
   theme_minimal() +
   theme(panel.grid.major = element_line(linewidth = 0.2),
@@ -197,11 +151,11 @@ pm25_dist <- cco |>
   ggplot() +
   geom_histogram(aes(pm25_3day),
                  fill = "#c0aada", 
-                 binwidth = 0.5) +
+                 binwidth = 1) +
   scale_x_continuous(expand = c(0, 0)) +
   scale_y_continuous(labels = label_comma(), 
                      expand = c(0, 0),
-                     limits = c(0, 10500)) +
+                     limits = c(0, 20000)) +
   geom_vline(xintercept = median(cco$pm25_3day), lty = 2, color = "gray30") +
   geom_vline(xintercept = quantile(cco$pm25_3day, 0.95), lty = 2, color = "gray30") +
   labs(x = expression("Three-day " * PM[2.5] * " (\u03BCg/" * m^3 * ")"), 
@@ -218,13 +172,18 @@ temp_pm25_plots <- cowplot::align_plots(temp_dist, pm25_dist, align = "hv")
 plot_grid(temp_pm25_plots[[1]], temp_pm25_plots[[2]])
 ggsave("results/figures/temp_pm25_dist.pdf", width = 7, height = 3)
 
-# get range of temp and pm values on case date
+# get range of temp and pm2.5 values on case date
 cases <- cco %>%
   filter(cases == 1)
 
 range(cases$temp_lag0)
+quantile(cases$temp_lag0, c(0.05, 0.95))
+median(cases$temp_lag0)
+mean(cases$temp_lag0)
+
 range(cases$pm25_3day) # after trimming (see bottom of this script for max before trimming)
 median(cases$pm25_3day)
+
 
 #---------- boxplots of exposure on case vs control days ----------#
 
@@ -232,7 +191,7 @@ cco %>%
   mutate(cases = ifelse(cases == 1, "Case", "Control")) %>%
   ggplot() +
   geom_boxplot(aes(temp_lag0, x = as.factor(cases)), fill = "#f5ca7b") +
-  labs(x = "", y = "Daily max. temperature (\u00B0F)") +
+  labs(x = "", y = "Daily max. temperature (\u00B0C)") +
   theme_minimal()
 
 cco %>%
@@ -243,32 +202,24 @@ cco %>%
   theme_minimal()
 
 
-##################################################
+#---------- temp vs. PM2.5 ----------#
 
-# # different temp exposures
-# 
-# dataset <- "tmax_temp"
-# #dataset <- "tmax_pcnt"
-# #dataset <- "hi_temp"
-# #dataset <- "hi_pcnt"
-# 
-# load(paste0("data/intermediate/cco_", dataset, ".RData"))
-# 
-# # Age distribution
-# cco[cases == 1] |>
-#   ggplot() +
-#   geom_histogram(aes(temp_lag0), col = "white", fill = "#a0c293",
-#                  binwidth = 3
-#                 ) +
-#   scale_y_continuous(labels = label_comma()) +
-#   labs(x = paste0(dataset, " on case date"), y = "Count") +
-#   theme_minimal()
-# 
-
-
-
-#---------------------------------
-# look at exposures on each control day (2 weeks before, 1 week before, etc.)
+cases |>
+  ggplot(aes(x = temp_lag0, y = pm25_3day)) +
+  geom_bin2d() + # from ggpointdensity package
+  labs(x = "Daily maximum temperature (\u00B0C)",
+       y = expression("Three-day " * PM[2.5] * " (\u03BCg/" * m^3 * ")"),
+       fill = "Number of case days") +
+  scale_x_continuous(expand = c(0,0)) +
+  scale_y_continuous(expand = c(0,0)) +
+  scale_fill_viridis(option = "A") +
+  theme_classic() +
+  theme(legend.position = "bottom") +
+  guides(fill = guide_colorbar(title.position = "top",
+                               barwidth = 20,
+                               barheight = 0.5,
+                               ticks.colour = NA))
+ggsave("results/figures/temp_vs_pm25.pdf", height = 5.5, width = 5)
 
 
 #---------- maps (exposures and outcome) ----------#
@@ -281,7 +232,7 @@ plot_df <- cco %>%
             mean_pm25_3day = mean(pm25_3day),
             n = n())
 
-# load at risk people in Medicare
+# load at risk people in our Medicare data by county
 at_risk <- read_sas(paste0("data/raw/atrisk_cty.sas7bdat"))
 
 # join with plot_df
@@ -309,22 +260,20 @@ plot_df <- full_join(county_sf, plot_df, by = c("county"), )
 
 ##### temp map #####
 temp_map <- plot_df %>%
-  mutate(mean_temp_lag0 = ifelse(n > 10, # & at_risk > 1000, 
+  mutate(mean_temp_lag0 = ifelse(n > 10, 
                                  mean_temp_lag0, NA)) %>% # filter to > 10 cases
   mutate(temp_cat = cut(mean_temp_lag0, 
                         right = FALSE,
-                        breaks = c(64, 80, 85, 90, 105), # 64.2, 104.8
-                        labels = c("64\u201380", "80\u201385",
-                                   "85\u201390", "90\u2013105")
+                        breaks = c(17, 27, 29, 32, 41),
+                        labels = c("17\u201327", "27\u201329",
+                                   "29\u201332", "32\u201341")
                         )) %>%
   ggplot() +
   geom_sf(aes(fill = temp_cat), col = NA) +
   geom_sf(data = state_sf, fill = NA, col = "black") +
   coord_sf(crs = st_crs(5070)) +
-  labs(fill = "Daily maximum temperature (\u00B0F)") +
-  scale_fill_manual(#values = c("#fee391", "#fe9929", "#cc5500", "#7b3804"),
-                    #values = viridis(5, option = "F", direction = -1)[2:5], # use 4 darkest of 5 colors
-                    values = viridis(4, option = "D"),
+  labs(fill = "Daily maximum temperature (\u00B0C)") +
+  scale_fill_manual(values = viridis(4, option = "D"),
                     na.translate = FALSE) +
   theme_void() +
   theme(legend.position = "bottom",
@@ -336,11 +285,10 @@ temp_map <- plot_df %>%
 ##### pm25 map #####
 pm25_map <- plot_df %>%
   mutate(mean_pm25_3day = ifelse(n > 10, 
-                                 #& at_risk > 1000, 
                                  mean_pm25_3day, NA)) %>% # filter to > 10 cases
   mutate(pm25_cat = cut(mean_pm25_3day, 
                         right = FALSE,
-                        breaks = c(2, 7, 9, 11, 15), # 2.9, 14.3
+                        breaks = c(2, 7, 9, 11, 15),
                         labels = c("3\u20137", "7\u20139",
                                    "9\u201311", "11\u201314")
   )) %>%
@@ -349,11 +297,8 @@ pm25_map <- plot_df %>%
   geom_sf(data = state_sf, fill = NA, col = "black") +
   coord_sf(crs = st_crs(5070)) +
   labs(fill = expression("Three-day " * PM[2.5] * " (\u03BCg/" * m^3 * ")")) +
-  scale_fill_manual(#values = c("#dfd4ef", "#b19cd9", "#7d52be", "#3f007d"),
-                    values = viridis(4, option = "D"),
-                    na.translate = FALSE#,
-                    #na.value = "gray60"
-  ) +
+  scale_fill_manual(values = viridis(4, option = "D"),
+                    na.translate = FALSE) +
   theme_void() +
   theme(legend.position = "bottom",
         legend.direction = "horizontal",
@@ -363,25 +308,12 @@ pm25_map <- plot_df %>%
 
 ###### rate of hospitalization map #####
 
-# # further aggregate plot data by state
-# plot_state_df <- plot_df %>%
-#   group_by(STATEFP) %>%
-#   summarise(n = sum(n)) %>%
-#   st_drop_geometry()
-
-# # join shapefile with plotting data
-# plot_state_sf <- full_join(state_sf, plot_state_df, by = c("STATEFP"))
-# 
-# # merge with plot data
-# plot_state_df <- left_join(plot_state_df, at_risk, by = c("STATEFP" = "State"))
-
 hosp_map <- plot_df %>%
   mutate(hosp_rate = ifelse(n > 10,
-                            #& at_risk > 1000, 
                             hosp_rate, NA)) %>% # filter to > 10 cases
   mutate(hosp_cat = cut(hosp_rate,
                         right = FALSE,
-                        breaks = c(1, 4, 7, 10, 59), # 1.1, 58.2
+                        breaks = c(1, 4, 7, 10, 59),
                         labels = c("1\u20134", "4\u20137",
                         "7\u201310", "10\u201358")
   )) %>%
@@ -410,10 +342,11 @@ ggsave("results/figures/temp_pm25_hosp_maps.pdf", height = 3, width = 10)
 ##############################################################
 
 # dataset before trimming 
-load(paste0("data/intermediate/cco_", dataset, ".RData"))
+load(paste0("data/intermediate/cco_full_tmax_temp.RData"))
 
-# get 95th percentile of 3-day PM2.5
+# get 95th and 99th percentiles of 3-day PM2.5
 pm25_3day_q95 <- quantile(cco$pm25_3day, 0.95) # 18.4 ug/m3
+pm25_3day_q99 <- quantile(cco$pm25_3day, 0.99) # 23.7 ug/m3
 
 # get dist of PM2.5 before trimming
 cco |>
@@ -423,6 +356,7 @@ cco |>
                  fill = "#c0aada", 
                  binwidth = 0.5) +
   geom_vline(xintercept = pm25_3day_q95, col = "black") +
+  geom_vline(xintercept = pm25_3day_q99, col = "black") +
   scale_x_continuous(breaks = c(0, 25, 50, 75, 100, 125, 150)) +
   scale_y_continuous(labels = label_comma()) +
   labs(x = expression("Three-day " * PM[2.5] * " (\u03BCg/" * m^3 * ")"),
@@ -435,5 +369,5 @@ cases <- cco %>%
   filter(cases == 1)
 
 max(cases$pm25_3day)
-
+max(cco$pm25_3day)
 
